@@ -16,12 +16,15 @@ REPORT_KEYS = {
     "unprocessed",
     "iterable_item_added",
     "iterable_item_removed",
+    "iterable_item_moved",
     "attribute_added",
     "attribute_removed",
     "set_item_removed",
     "set_item_added",
     "repetition_change",
 }
+
+CUSTOM_FIELD = "__internal:custom:extra_info"
 
 
 class DoesNotExist(Exception):
@@ -46,6 +49,7 @@ class PrettyOrderedSet(OrderedSet):
     From the perspective of the users of the library, they are dealing with lists.
     Behind the scene, we have ordered sets.
     """
+
     def __repr__(self):
         return '[{}]'.format(", ".join(map(str, self)))
 
@@ -84,9 +88,13 @@ class TreeResult(ResultDict):
         if 'iterable_item_added' in self and not self['iterable_item_added']:
             del self['iterable_item_added']
 
+    def __getitem__(self, item):
+        if item not in self:
+            self[item] = PrettyOrderedSet()
+        return self.get(item)
+
 
 class TextResult(ResultDict):
-
     ADD_QUOTES_TO_STRINGS = True
 
     def __init__(self, tree_results=None, verbose_level=1):
@@ -100,6 +108,7 @@ class TextResult(ResultDict):
             "unprocessed": [],
             "iterable_item_added": dict_(),
             "iterable_item_removed": dict_(),
+            "iterable_item_moved": dict_(),
             "attribute_added": self.__set_or_dict(),
             "attribute_removed": self.__set_or_dict(),
             "set_item_removed": PrettyOrderedSet(),
@@ -126,12 +135,14 @@ class TextResult(ResultDict):
         self._from_tree_unprocessed(tree)
         self._from_tree_default(tree, 'iterable_item_added')
         self._from_tree_default(tree, 'iterable_item_removed')
+        self._from_tree_iterable_item_moved(tree)
         self._from_tree_default(tree, 'attribute_added')
         self._from_tree_default(tree, 'attribute_removed')
         self._from_tree_set_item_removed(tree)
         self._from_tree_set_item_added(tree)
         self._from_tree_repetition_change(tree)
         self._from_tree_deep_distance(tree)
+        self._from_tree_custom_results(tree)
 
     def _from_tree_default(self, tree, report_type):
         if report_type in tree:
@@ -179,13 +190,20 @@ class TextResult(ResultDict):
                     remap_dict.update(old_value=change.t1, new_value=change.t2)
 
     def _from_tree_value_changed(self, tree):
-        if 'values_changed' in tree:
+        if 'values_changed' in tree and self.verbose_level > 0:
             for change in tree['values_changed']:
                 the_changed = {'new_value': change.t2, 'old_value': change.t1}
                 self['values_changed'][change.path(
                     force=FORCE_DEFAULT)] = the_changed
                 if 'diff' in change.additional:
                     the_changed.update({'diff': change.additional['diff']})
+
+    def _from_tree_iterable_item_moved(self, tree):
+        if 'iterable_item_moved' in tree and self.verbose_level > 1:
+            for change in tree['iterable_item_moved']:
+                the_changed = {'new_path': change.path(use_t2=True), 'value': change.t2}
+                self['iterable_item_moved'][change.path(
+                    force=FORCE_DEFAULT)] = the_changed
 
     def _from_tree_unprocessed(self, tree):
         if 'unprocessed' in tree:
@@ -221,17 +239,36 @@ class TextResult(ResultDict):
         if 'repetition_change' in tree:
             for change in tree['repetition_change']:
                 path = change.path(force=FORCE_DEFAULT)
-                self['repetition_change'][path] = RemapDict(change.additional[
-                    'repetition'])
+                self['repetition_change'][path] = RemapDict(
+                    change.additional['repetition']
+                )
                 self['repetition_change'][path]['value'] = change.t1
 
     def _from_tree_deep_distance(self, tree):
         if 'deep_distance' in tree:
             self['deep_distance'] = tree['deep_distance']
 
+    def _from_tree_custom_results(self, tree):
+        for k, _level_list in tree.items():
+            if k not in REPORT_KEYS:
+                if not isinstance(_level_list, PrettyOrderedSet):
+                    continue
+
+                # if len(_level_list) == 0:
+                #     continue
+                #
+                # if not isinstance(_level_list[0], DiffLevel):
+                #     continue
+
+                # _level_list is a list of DiffLevel
+                _custom_dict = {}
+                for _level in _level_list:
+                    _custom_dict[_level.path(
+                        force=FORCE_DEFAULT)] = _level.additional.get(CUSTOM_FIELD, {})
+                self[k] = _custom_dict
+
 
 class DeltaResult(TextResult):
-
     ADD_QUOTES_TO_STRINGS = False
 
     def __init__(self, tree_results=None, ignore_order=None):
@@ -244,6 +281,7 @@ class DeltaResult(TextResult):
             "values_changed": dict_(),
             "iterable_item_added": dict_(),
             "iterable_item_removed": dict_(),
+            "iterable_item_moved": dict_(),
             "attribute_added": dict_(),
             "attribute_removed": dict_(),
             "set_item_removed": dict_(),
@@ -273,6 +311,7 @@ class DeltaResult(TextResult):
         else:
             self._from_tree_default(tree, 'iterable_item_added')
             self._from_tree_default(tree, 'iterable_item_removed')
+            self._from_tree_iterable_item_moved(tree)
         self._from_tree_default(tree, 'attribute_added')
         self._from_tree_default(tree, 'attribute_removed')
         self._from_tree_set_item_removed(tree)
@@ -355,6 +394,13 @@ class DeltaResult(TextResult):
                     iterable_items_added_at_indexes = self['iterable_items_added_at_indexes'][path] = dict_()
                 for index in repetition['new_indexes']:
                     iterable_items_added_at_indexes[index] = value
+
+    def _from_tree_iterable_item_moved(self, tree):
+        if 'iterable_item_moved' in tree:
+            for change in tree['iterable_item_moved']:
+                the_changed = {'new_path': change.path(use_t2=True), 'value': change.t2}
+                self['iterable_item_moved'][change.path(
+                    force=FORCE_DEFAULT)] = the_changed
 
 
 class DiffLevel:
@@ -528,7 +574,7 @@ class DiffLevel:
     def repetition(self):
         return self.additional['repetition']
 
-    def auto_generate_child_rel(self, klass, param):
+    def auto_generate_child_rel(self, klass, param, param2=None):
         """
         Auto-populate self.child_rel1 and self.child_rel2.
         This requires self.down to be another valid DiffLevel object.
@@ -542,7 +588,7 @@ class DiffLevel:
                 klass=klass, parent=self.t1, child=self.down.t1, param=param)
         if self.down.t2 is not notpresent:
             self.t2_child_rel = ChildRelationship.create(
-                klass=klass, parent=self.t2, child=self.down.t2, param=param)
+                klass=klass, parent=self.t2, child=self.down.t2, param=param if param2 is None else param2)
 
     @property
     def all_up(self):
@@ -572,7 +618,7 @@ class DiffLevel:
     def _format_result(root, result):
         return None if result is None else "{}{}".format(root, result)
 
-    def path(self, root="root", force=None, get_parent_too=False):
+    def path(self, root="root", force=None, get_parent_too=False, use_t2=False, output_format='str'):
         """
         A python syntax string describing how to descend to this level, assuming the top level object is called root.
         Returns None if the path is not representable as a string.
@@ -582,6 +628,9 @@ class DiffLevel:
         Note: We will follow the left side of the comparison branch, i.e. using the t1's to build the path.
         Using t1 or t2 should make no difference at all, except for the last step of a child-added/removed relationship.
         If it does in any other case, your comparison path is corrupt.
+
+        **Parameters**
+
         :param root: The result string shall start with this var name
         :param force: Bends the meaning of "no string representation".
                       If None:
@@ -592,9 +641,12 @@ class DiffLevel:
                       If 'fake':
                         Will try to produce an output optimized for readability.
                         This will pretend all iterables are subscriptable, for example.
+        :param output_format: The format of the output. The options are 'str' which is the default and produces a
+                              string representation of the path or 'list' to produce a list of keys and attributes
+                              that produce the path.
         """
         # TODO: We could optimize this by building on top of self.up's path if it is cached there
-        cache_key = "{}{}".format(force, get_parent_too)
+        cache_key = "{}{}{}{}".format(force, get_parent_too, use_t2, output_format)
         if cache_key in self._path:
             cached = self._path[cache_key]
             if get_parent_too:
@@ -603,38 +655,51 @@ class DiffLevel:
             else:
                 return self._format_result(root, cached)
 
-        result = parent = param = ""
+        if output_format == 'str':
+            result = parent = param = ""
+        else:
+            result = []
+
         level = self.all_up  # start at the root
 
         # traverse all levels of this relationship
         while level and level is not self:
             # get this level's relationship object
-            next_rel = level.t1_child_rel or level.t2_child_rel  # next relationship object to get a formatted param from
+            if(use_t2):
+                next_rel = level.t2_child_rel
+            else:
+                next_rel = level.t1_child_rel or level.t2_child_rel  # next relationship object to get a formatted param from
 
             # t1 and t2 both are empty
             if next_rel is None:
                 break
 
             # Build path for this level
-            item = next_rel.get_param_repr(force)
-            if item:
-                parent = result
-                param = next_rel.param
-                result += item
-            else:
-                # it seems this path is not representable as a string
-                result = None
-                break
+            if output_format == 'str':
+                item = next_rel.get_param_repr(force)
+                if item:
+                    parent = result
+                    param = next_rel.param
+                    result += item
+                else:
+                    # it seems this path is not representable as a string
+                    result = None
+                    break
+            elif output_format == 'list':
+                result.append(next_rel.param)
 
             # Prepare processing next level
             level = level.down
 
-        if get_parent_too:
-            self._path[cache_key] = (parent, param, result)
-            output = (self._format_result(root, parent), param, self._format_result(root, result))
+        if output_format == 'str':
+            if get_parent_too:
+                self._path[cache_key] = (parent, param, result)
+                output = (self._format_result(root, parent), param, self._format_result(root, result))
+            else:
+                self._path[cache_key] = result
+                output = self._format_result(root, result)
         else:
-            self._path[cache_key] = result
-            output = self._format_result(root, result)
+            output = result
         return output
 
     def create_deeper(self,
@@ -642,6 +707,7 @@ class DiffLevel:
                       new_t2,
                       child_relationship_class,
                       child_relationship_param=None,
+                      child_relationship_param2=None,
                       report_type=None):
         """
         Start a new comparison level and correctly link it to this one.
@@ -653,7 +719,7 @@ class DiffLevel:
             new_t1, new_t2, down=None, up=level, report_type=report_type)
         level.down = result
         level.auto_generate_child_rel(
-            klass=child_relationship_class, param=child_relationship_param)
+            klass=child_relationship_class, param=child_relationship_param, param2=child_relationship_param2)
         return result
 
     def branch_deeper(self,
@@ -661,6 +727,7 @@ class DiffLevel:
                       new_t2,
                       child_relationship_class,
                       child_relationship_param=None,
+                      child_relationship_param2=None,
                       report_type=None):
         """
         Branch this comparison: Do not touch this comparison line, but create a new one with exactly the same content,
@@ -670,7 +737,7 @@ class DiffLevel:
         """
         branch = self.copy()
         return branch.create_deeper(new_t1, new_t2, child_relationship_class,
-                                    child_relationship_param, report_type)
+                                    child_relationship_param, child_relationship_param2, report_type)
 
     def copy(self):
         """

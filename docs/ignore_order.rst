@@ -34,6 +34,21 @@ List difference ignoring order or duplicates: (with the same dictionaries as abo
     >>> print (ddiff)
     {}
 
+.. _ignore_order_func_label:
+
+Dynamic Ignore Order
+--------------------
+
+Sometimes single *ignore_order* parameter is not enough to do a diff job,
+you can use *ignore_order_func* to determine whether the order of certain paths should be ignored
+
+List difference ignoring order with *ignore_order_func*
+    >>> t1 = {"set": [1,2,3], "list": [1,2,3]}
+    >>> t2 = {"set": [3,2,1], "list": [3,2,1]}
+    >>> ddiff = DeepDiff(t1, t2, ignore_order_func=lambda level: "set" in level.path())
+    >>> print (ddiff)
+    { 'values_changed': { "root['list'][0]": {'new_value': 3, 'old_value': 1},
+                          "root['list'][2]": {'new_value': 1, 'old_value': 3}}}
 
 .. _report_repetition_label:
 
@@ -78,7 +93,7 @@ You can control the maximum number of passes that can be run via the max_passes 
 Max Passes Example
     >>> from pprint import pprint
     >>> from deepdiff import DeepDiff
-    >>> 
+    >>>
     >>> t1 = [
     ...     {
     ...         'key3': [[[[[1, 2, 4, 5]]]]],
@@ -89,7 +104,7 @@ Max Passes Example
     ...         'key6': 'val6',
     ...     },
     ... ]
-    >>> 
+    >>>
     >>> t2 = [
     ...     {
     ...         'key5': 'CHANGE',
@@ -100,12 +115,12 @@ Max Passes Example
     ...         'key4': [7, 8],
     ...     },
     ... ]
-    >>> 
+    >>>
     >>> for max_passes in (1, 2, 62, 65):
     ...     diff = DeepDiff(t1, t2, ignore_order=True, max_passes=max_passes, verbose_level=2)
     ...     print('-\n----- Max Passes = {} -----'.format(max_passes))
     ...     pprint(diff)
-    ... 
+    ...
     DeepDiff has reached the max number of passes of 1. You can possibly get more accurate results by increasing the max_passes parameter.
     -
     ----- Max Passes = 1 -----
@@ -218,5 +233,72 @@ So 2.0 and 2.01 are paired together for example.
 
 
 As an example of how much this parameter can affect the results in deeply nested objects, please take a look at :ref:`distance_and_diff_granularity_label`.
+
+
+.. _iterable_compare_func_label2:
+
+Iterable Compare Func
+---------------------
+
+New in DeepDiff 5.5.0
+
+There are times that we want to guide DeepDiff as to what items to compare with other items. In such cases we can pass a `iterable_compare_func` that takes a function pointer to compare two items. The function takes three parameters (x, y, level) and should return `True` if it is a match, `False` if it is not a match or raise `CannotCompare` if it is unable to compare the two.
+
+
+For example take the following objects:
+
+    >>> from deepdiff import DeepDiff
+    >>> from deepdiff.helper import CannotCompare
+    >>>
+    >>> t1 = [
+    ...     {
+    ...         'id': 1,
+    ...         'value': [1]
+    ...     },
+    ...     {
+    ...         'id': 2,
+    ...         'value': [7, 8, 1]
+    ...     },
+    ...     {
+    ...         'id': 3,
+    ...         'value': [7, 8],
+    ...     },
+    ... ]
+    >>>
+    >>> t2 = [
+    ...     {
+    ...         'id': 2,
+    ...         'value': [7, 8]
+    ...     },
+    ...     {
+    ...         'id': 3,
+    ...         'value': [7, 8, 1],
+    ...     },
+    ...     {
+    ...         'id': 1,
+    ...         'value': [1]
+    ...     },
+    ... ]
+    >>>
+    >>> DeepDiff(t1, t2, ignore_order=True)
+    {'values_changed': {"root[2]['id']": {'new_value': 2, 'old_value': 3}, "root[1]['id']": {'new_value': 3, 'old_value': 2}}}
+
+
+Now let's define a compare_func that takes 3 parameters: x, y and level.
+
+    >>> def compare_func(x, y, level=None):
+    ...     try:
+    ...         return x['id'] == y['id']
+    ...     except Exception:
+    ...         raise CannotCompare() from None
+    ...
+    >>> DeepDiff(t1, t2, ignore_order=True, iterable_compare_func=compare_func)
+    {'iterable_item_added': {"root[2]['value'][2]": 1}, 'iterable_item_removed': {"root[1]['value'][2]": 1}}
+
+As you can see the results are different. Now items with the same ids are compared with each other.
+
+.. note::
+
+    The level parameter of the iterable_compare_func is only used when ignore_order=False.
 
 Back to :doc:`/index`
